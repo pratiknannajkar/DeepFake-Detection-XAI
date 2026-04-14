@@ -21,6 +21,7 @@ from backend.analyzers.ela import ELAAnalyzer
 from backend.analyzers.dct import DCTAnalyzer
 from backend.analyzers.face_forensics import FaceForensicsAnalyzer
 from backend.analyzers.classifier import ClassifierAnalyzer
+from backend.analyzers.xai_report import XAIReportGenerator
 
 
 # ── App setup ──────────────────────────────────────────────────────────────────
@@ -43,10 +44,31 @@ ela_analyzer = ELAAnalyzer(quality=90, scale=15.0)
 dct_analyzer = DCTAnalyzer(block_size=8)
 forensics_analyzer = FaceForensicsAnalyzer()
 classifier = ClassifierAnalyzer()
+xai_generator = XAIReportGenerator()
 
 # Max upload size: 10MB
 MAX_FILE_SIZE = 10 * 1024 * 1024
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff"}
+
+
+def _safe_classifier_result(classifier_result: dict) -> dict:
+    """Normalize classifier output so API response never breaks on missing keys."""
+    prediction = classifier_result.get("prediction", "SUSPICIOUS")
+    confidence = float(classifier_result.get("confidence", 50.0))
+    combined_score = float(classifier_result.get("combined_score", confidence))
+    reasoning = classifier_result.get("reasoning", [])
+    if not isinstance(reasoning, list):
+        reasoning = [str(reasoning)]
+
+    return {
+        "prediction": prediction,
+        "confidence": round(confidence, 1),
+        "combined_score": round(combined_score, 1),
+        "gradcam_b64": classifier_result.get("gradcam_b64", ""),
+        "model_loaded": bool(classifier_result.get("model_loaded", False)),
+        "model_note": classifier_result.get("model_note", ""),
+        "reasoning": reasoning or ["No detailed reasoning returned by classifier."],
+    }
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -81,12 +103,12 @@ async def health_check():
     return {
         "status": "ok",
         "service": "DeepShield AI",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "analyzers": {
             "ela": "active",
             "dct": "active",
             "face_forensics": "active",
-            "classifier": "demo_mode" if not classifier.model_loaded else "active",
+            "classifier": "heuristic_fallback" if not classifier.model_loaded else "active (EfficientNet-B0)",
         },
     }
 
@@ -117,8 +139,10 @@ async def full_analysis(file: UploadFile = File(...)):
             forensics_result=forensics_result,
         )
 
+        safe_classifier = _safe_classifier_result(classifier_result)
+
         # Compute overall verdict
-        overall_score = classifier_result["combined_score"]
+        overall_score = safe_classifier["combined_score"]
 
         if overall_score >= 50:
             overall_verdict = "FAKE"
@@ -135,78 +159,107 @@ async def full_analysis(file: UploadFile = File(...)):
 
         elapsed = round(time.time() - start_time, 2)
 
+        # Build response data objects for XAI report
+        overall_data = {
+            "verdict": overall_verdict,
+            "risk_level": risk_level,
+            "score": overall_score,
+            "prediction": safe_classifier["prediction"],
+            "confidence": safe_classifier["confidence"],
+            "reasoning": safe_classifier["reasoning"],
+            "gradcam_b64": safe_classifier["gradcam_b64"],
+        }
+
+        ela_data = {
+            "score": ela_result["overall_score"],
+            "verdict": ela_result["verdict"],
+            "heatmap_b64": ela_result["ela_heatmap_b64"],
+            "overlay_b64": ela_result["ela_overlay_b64"],
+            "stats": {
+                "max_error": ela_result["max_error"],
+                "mean_error": ela_result["mean_error"],
+                "error_std": ela_result["error_std"],
+                "p95_error": ela_result.get("p95_error", 0),
+                "region_variance": ela_result["region_variance"],
+            },
+            "face_vs_background": ela_result.get("face_vs_background", {}),
+            "noise_consistency": ela_result.get("noise_consistency", {}),
+            "multi_quality": ela_result.get("multi_quality", {}),
+        }
+
+        dct_data = {
+            "score": dct_result["overall_score"],
+            "verdict": dct_result["verdict"],
+            "spectral_map_b64": dct_result["spectral_map_b64"],
+            "spectral_overlay_b64": dct_result["spectral_overlay_b64"],
+            "frequency_distribution": dct_result["frequency_distribution"],
+            "periodic_artifacts": dct_result["periodic_artifacts"],
+        }
+
+        forensics_data = {
+            "score": forensics_result["overall_score"],
+            "verdict": forensics_result["verdict"],
+            "face_detected": forensics_result["face_detected"],
+            "suspicious_checks": forensics_result.get("suspicious_checks", 0),
+            "annotated_face_b64": forensics_result.get("annotated_face_b64", ""),
+            "annotated_full_b64": forensics_result.get("annotated_full_b64", ""),
+            "checks": {
+                "symmetry": {
+                    "score": forensics_result["symmetry"]["score"],
+                    "detail": forensics_result["symmetry"]["detail"],
+                    "is_suspicious": forensics_result["symmetry"].get("is_suspicious", False),
+                },
+                "eye_reflections": {
+                    "score": forensics_result["eye_reflections"]["score"],
+                    "detail": forensics_result["eye_reflections"]["detail"],
+                    "is_suspicious": forensics_result["eye_reflections"].get("is_suspicious", False),
+                },
+                "boundaries": {
+                    "score": forensics_result["boundaries"]["score"],
+                    "detail": forensics_result["boundaries"]["detail"],
+                    "is_suspicious": forensics_result["boundaries"].get("is_suspicious", False),
+                },
+                "mouth": {
+                    "score": forensics_result["mouth"]["score"],
+                    "detail": forensics_result["mouth"]["detail"],
+                    "is_suspicious": forensics_result["mouth"].get("is_suspicious", False),
+                },
+            },
+        }
+
+        # Generate XAI report
+        try:
+            xai_report = xai_generator.generate(
+                overall=overall_data,
+                ela=ela_data,
+                dct=dct_data,
+                forensics=forensics_data,
+                classifier=safe_classifier,
+            )
+        except Exception:
+            xai_report = {
+                "prediction": overall_verdict,
+                "confidence": f"{safe_classifier['confidence']}%",
+                "key_findings": safe_classifier["reasoning"],
+                "suspicious_regions": [],
+                "technical_analysis": {},
+                "final_explanation": f"Image classified as {overall_verdict}.",
+            }
+
         return JSONResponse(
             content={
                 "status": "success",
                 "analysis_time_seconds": elapsed,
                 "filename": file.filename,
-                "overall": {
-                    "verdict": overall_verdict,
-                    "risk_level": risk_level,
-                    "score": overall_score,
-                    "prediction": classifier_result["prediction"],
-                    "confidence": classifier_result["confidence"],
-                    "reasoning": classifier_result["reasoning"],
-                    "gradcam_b64": classifier_result["gradcam_b64"],
-                },
-                "ela": {
-                    "score": ela_result["overall_score"],
-                    "verdict": ela_result["verdict"],
-                    "heatmap_b64": ela_result["ela_heatmap_b64"],
-                    "overlay_b64": ela_result["ela_overlay_b64"],
-                    "stats": {
-                        "max_error": ela_result["max_error"],
-                        "mean_error": ela_result["mean_error"],
-                        "error_std": ela_result["error_std"],
-                        "p95_error": ela_result.get("p95_error", 0),
-                        "region_variance": ela_result["region_variance"],
-                    },
-                    "face_vs_background": ela_result.get("face_vs_background", {}),
-                    "noise_consistency": ela_result.get("noise_consistency", {}),
-                    "multi_quality": ela_result.get("multi_quality", {}),
-                },
-                "dct": {
-                    "score": dct_result["overall_score"],
-                    "verdict": dct_result["verdict"],
-                    "spectral_map_b64": dct_result["spectral_map_b64"],
-                    "spectral_overlay_b64": dct_result["spectral_overlay_b64"],
-                    "frequency_distribution": dct_result["frequency_distribution"],
-                    "periodic_artifacts": dct_result["periodic_artifacts"],
-                },
-                "forensics": {
-                    "score": forensics_result["overall_score"],
-                    "verdict": forensics_result["verdict"],
-                    "face_detected": forensics_result["face_detected"],
-                    "suspicious_checks": forensics_result.get("suspicious_checks", 0),
-                    "annotated_face_b64": forensics_result.get("annotated_face_b64", ""),
-                    "annotated_full_b64": forensics_result.get("annotated_full_b64", ""),
-                    "checks": {
-                        "symmetry": {
-                            "score": forensics_result["symmetry"]["score"],
-                            "detail": forensics_result["symmetry"]["detail"],
-                            "is_suspicious": forensics_result["symmetry"].get("is_suspicious", False),
-                        },
-                        "eye_reflections": {
-                            "score": forensics_result["eye_reflections"]["score"],
-                            "detail": forensics_result["eye_reflections"]["detail"],
-                            "is_suspicious": forensics_result["eye_reflections"].get("is_suspicious", False),
-                        },
-                        "boundaries": {
-                            "score": forensics_result["boundaries"]["score"],
-                            "detail": forensics_result["boundaries"]["detail"],
-                            "is_suspicious": forensics_result["boundaries"].get("is_suspicious", False),
-                        },
-                        "mouth": {
-                            "score": forensics_result["mouth"]["score"],
-                            "detail": forensics_result["mouth"]["detail"],
-                            "is_suspicious": forensics_result["mouth"].get("is_suspicious", False),
-                        },
-                    },
-                },
+                "overall": overall_data,
+                "ela": ela_data,
+                "dct": dct_data,
+                "forensics": forensics_data,
                 "classifier": {
-                    "model_loaded": classifier_result["model_loaded"],
-                    "model_note": classifier_result.get("model_note", ""),
+                    "model_loaded": safe_classifier["model_loaded"],
+                    "model_note": safe_classifier["model_note"],
                 },
+                "xai_report": xai_report,
             }
         )
 

@@ -197,6 +197,26 @@
                 </div>
             </div>
 
+            <!-- AI Explanation Panel -->
+            <div class="explanation-panel" id="explanation-panel" style="display:none;">
+                <div class="explanation-header">
+                    <div class="explanation-icon">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h3 class="explanation-title">Why is this image <span id="expl-verdict-text">FAKE</span>?</h3>
+                        <p class="explanation-subtitle">Parameter-by-parameter analysis breakdown</p>
+                    </div>
+                </div>
+                <div class="explanation-summary" id="expl-summary"></div>
+                <div class="explanation-grid" id="explanation-grid">
+                    <!-- Filled dynamically by JS -->
+                </div>
+                <div class="explanation-footer" id="expl-footer"></div>
+            </div>
+
             <!-- Analysis Tabs -->
             <div class="analysis-tabs" id="analysis-tabs">
                 <button class="tab-btn active" data-tab="gradcam">

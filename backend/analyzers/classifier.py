@@ -2,61 +2,80 @@
 DeepShield AI — CNN Classifier with Grad-CAM Explainability
 Provides a deep-learning classification layer with visual explanations.
 
-NOTE: This module is structured and ready for a real pre-trained model
-(e.g., XceptionNet or EfficientNet fine-tuned on FaceForensics++).
-Without a model file, it returns simulated results based on the other
-analyzer scores for demonstration purposes.
+PRIMARY MODE: Uses EfficientNet-B0 (fine-tuned on deepfake dataset)
+for binary deepfake classification with real Grad-CAM heatmaps.
+Model file: backend/models/efficientnet_deepfake.pth (~20MB).
+
+FALLBACK MODE: If model file is missing, falls back to heuristic
+aggregation of ELA/DCT/Forensics scores (less accurate but always available).
 """
 
-import numpy as np
-import cv2
 import os
+import json
+import cv2
+import numpy as np
+import logging
 from typing import Dict, Any, Optional
 
 from backend.utils.image_utils import cv2_to_base64, load_image_from_bytes, apply_heatmap_overlay
+from backend.analyzers import model_loader
 
+logger = logging.getLogger("deepshield.classifier")
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
+MODEL_CONFIG_PATH = os.path.join(MODEL_DIR, "model_config.json")
 
 
 class ClassifierAnalyzer:
     """
     CNN-based deepfake classifier with Grad-CAM explainability.
 
-    In demo mode (no model loaded), synthesizes a classification result
-    from ELA/DCT/Forensics scores and generates a simulated Grad-CAM
-    heatmap highlighting the face region.
+    Uses EfficientNet-B0 (fine-tuned) as the primary detection method.
+    Falls back to heuristic aggregation if the model isn't available.
     """
 
     def __init__(self):
-        self.model = None
         self.model_loaded = False
-        self._try_load_model()
+        self._initialize_model()
 
-    def _try_load_model(self):
-        """Attempt to load a pre-trained model from the models directory."""
-        model_path = os.path.join(MODEL_DIR, "deepfake_detector.h5")
-        alt_path = os.path.join(MODEL_DIR, "deepfake_detector.pth")
+    def _initialize_model(self):
+        """Try to load the EfficientNet-B0 model."""
+        try:
+            if model_loader.is_model_loaded():
+                self.model_loaded = True
+                logger.info("ClassifierAnalyzer: EfficientNet-B0 model is ready.")
+            else:
+                err = model_loader.get_load_error()
+                logger.warning(f"ClassifierAnalyzer: EfficientNet-B0 model not available: {err}")
+                logger.warning("ClassifierAnalyzer: Will use heuristic fallback mode.")
+        except Exception as e:
+            logger.error(f"ClassifierAnalyzer: Model init error: {e}")
+            self.model_loaded = False
 
-        if os.path.exists(model_path):
-            try:
-                # TensorFlow/Keras model
-                import tensorflow as tf
-                self.model = tf.keras.models.load_model(model_path)
-                self.model_loaded = True
-                self.framework = "tensorflow"
-            except Exception:
-                pass
-        elif os.path.exists(alt_path):
-            try:
-                # PyTorch model
-                import torch
-                self.model = torch.load(alt_path, map_location="cpu")
-                self.model.eval()
-                self.model_loaded = True
-                self.framework = "pytorch"
-            except Exception:
-                pass
+    def _build_safe_response(
+        self,
+        prediction: str,
+        confidence: float,
+        combined_score: float,
+        gradcam_b64: str,
+        model_loaded: bool,
+        reasoning: list,
+        model_note: str = "",
+        component_scores: Optional[dict] = None,
+        fp_suppression_applied: bool = False,
+    ) -> Dict[str, Any]:
+        """Return a stable schema expected by the API layer."""
+        return {
+            "prediction": prediction,
+            "confidence": round(float(confidence), 1),
+            "combined_score": round(float(combined_score), 1),
+            "gradcam_b64": gradcam_b64 or "",
+            "model_loaded": bool(model_loaded),
+            "model_note": model_note,
+            "reasoning": reasoning if reasoning else ["No additional reasoning available"],
+            "fp_suppression_applied": bool(fp_suppression_applied),
+            "component_scores": component_scores or {},
+        }
 
     def _generate_simulated_gradcam(
         self, img: np.ndarray, focus_regions: Optional[list] = None
@@ -178,7 +197,8 @@ class ClassifierAnalyzer:
         """
         Classify the image and generate Grad-CAM explanation.
 
-        In demo mode, aggregates other analyzer scores.
+        Uses CLIP model as primary classifier (when available),
+        with heuristic scores as secondary stabilization signal.
 
         Returns:
             dict with:
@@ -190,14 +210,172 @@ class ClassifierAnalyzer:
         """
         img_cv2 = load_image_from_bytes(img_bytes)
 
-        if self.model_loaded:
-            # Real model inference path
-            return self._real_inference(img_cv2, img_bytes)
-        else:
-            # Demo mode: aggregate other scores
-            return self._demo_inference(
+        # Try EfficientNet model first
+        if model_loader.is_model_loaded():
+            return self._model_inference(
                 img_cv2, ela_score, dct_score, forensics_score, forensics_result
             )
+
+        # Fallback: heuristic aggregation
+        return self._demo_inference(
+            img_cv2, ela_score, dct_score, forensics_score, forensics_result
+        )
+
+    def _model_inference(
+        self,
+        img: np.ndarray,
+        ela_score: float,
+        dct_score: float,
+        forensics_score: float,
+        forensics_result: Optional[dict],
+    ) -> Dict[str, Any]:
+        """
+        EfficientNet-B0 inference — PRIMARY classification path.
+
+        Strategy:
+        1. EfficientNet-B0 (trained on deepfake data) gives fake_probability
+        2. Convert to 0-100 model_score
+        3. Blend 80% model + 20% heuristics
+        4. Generate real Grad-CAM heatmap from last conv layer
+        """
+        try:
+            # ── Step 1: EfficientNet classification ───────────────────────
+            fake_prob, model_details = model_loader.predict_fake_probability(img)
+            model_score = float(np.clip(fake_prob * 100.0, 0.0, 100.0))
+
+            logger.info(
+                f"EfficientNet prediction: fake_prob={fake_prob:.3f}, "
+                f"model_score={model_score:.1f}, "
+                f"verdict={model_details.get('top_match', 'N/A')}"
+            )
+
+            # ── Step 2: Heuristic stabilization (20% weight) ─────────────
+            heuristic_max = max(float(ela_score), float(dct_score), float(forensics_score))
+            heuristic_avg = (float(ela_score) + float(dct_score) + float(forensics_score)) / 3.0
+
+            # 80/20 fusion — trained model is primary, heuristics are supporting
+            heuristic_influence = heuristic_max * 0.6 + heuristic_avg * 0.4
+            combined_score = model_score * 0.80 + heuristic_influence * 0.20
+
+            # ── Step 3: Multi-signal agreement boost ──────────────────────
+            heuristic_flagged = sum(1 for s in [ela_score, dct_score, forensics_score] if s >= 35)
+
+            if model_score >= 60 and heuristic_flagged >= 2:
+                # Model + multiple heuristics agree → high confidence
+                combined_score = min(100, combined_score + 8)
+            elif model_score < 25 and heuristic_max < 20:
+                # Model + heuristics agree it's real → reinforce
+                combined_score = max(0, combined_score - 5)
+
+            # Safety net: if model is very confident, let it lead
+            if model_score >= 85:
+                combined_score = max(combined_score, model_score * 0.90)
+            elif model_score <= 15:
+                combined_score = min(combined_score, model_score * 1.2 + 8)
+
+            combined_score = min(100, max(0, round(combined_score, 1)))
+
+            # ── Step 4: Prediction thresholds ─────────────────────────────
+            if combined_score >= 55:
+                prediction = "FAKE"
+                confidence = min(99, 50 + combined_score * 0.5)
+            elif combined_score >= 38:
+                prediction = "SUSPICIOUS"
+                confidence = min(90, 40 + combined_score * 0.7)
+            elif combined_score >= 22:
+                prediction = "LIKELY REAL"
+                confidence = min(85, 60 + (35 - min(combined_score, 35)))
+            else:
+                prediction = "REAL"
+                confidence = min(99, 95 - combined_score * 0.5)
+
+            confidence = round(confidence, 1)
+
+            # ── Step 5: Generate Grad-CAM heatmap ─────────────────────────
+            try:
+                gradcam_heatmap = model_loader.generate_attention_heatmap(img)
+                gradcam_overlay = apply_heatmap_overlay(
+                    img, (gradcam_heatmap * 255).astype(np.float32),
+                    alpha=0.4, colormap=cv2.COLORMAP_JET
+                )
+            except Exception as heatmap_err:
+                logger.warning(f"Grad-CAM failed: {heatmap_err}, using fallback")
+                focus_regions = self._compute_focus_regions(forensics_result)
+                fallback_heatmap = self._generate_simulated_gradcam(img, focus_regions)
+                gradcam_overlay = apply_heatmap_overlay(
+                    img, (fallback_heatmap * 255).astype(np.float32),
+                    alpha=0.4, colormap=cv2.COLORMAP_JET
+                )
+
+            gradcam_b64 = cv2_to_base64(gradcam_overlay)
+
+            # ── Step 6: Build reasoning ───────────────────────────────────
+            reasoning = []
+
+            fake_pct = model_details.get("fake_probability", 0)
+            real_pct = model_details.get("real_probability", 0)
+            reasoning.append(
+                f"EfficientNet-B0: {fake_pct}% fake, {real_pct}% real"
+            )
+
+            if heuristic_max >= 30:
+                reasoning.append(
+                    f"Forensic heuristics support detection "
+                    f"(ELA:{round(ela_score)}, DCT:{round(dct_score)}, Forensics:{round(forensics_score)})"
+                )
+
+            # Add specific forensic findings
+            if forensics_result:
+                if forensics_result.get("boundaries", {}).get("is_suspicious"):
+                    reasoning.append("Blending artifacts at face boundaries (chin/hairline)")
+                if forensics_result.get("eye_reflections", {}).get("is_suspicious"):
+                    reasoning.append("Mismatched eye reflections")
+
+            if ela_score >= 30:
+                reasoning.append(f"Compression inconsistencies detected (ELA score: {round(ela_score)})")
+            if dct_score >= 30:
+                reasoning.append(f"Frequency domain anomalies found (DCT score: {round(dct_score)})")
+
+            if model_score >= 60 and heuristic_flagged >= 2:
+                reasoning.append("Both AI model and forensic heuristics agree on detection")
+
+            if prediction == "REAL" and len(reasoning) <= 1:
+                reasoning.append("All analysis layers indicate authentic image")
+
+            return self._build_safe_response(
+                prediction=prediction,
+                confidence=confidence,
+                combined_score=combined_score,
+                gradcam_b64=gradcam_b64,
+                model_loaded=True,
+                model_note="Using EfficientNet-B0 (fine-tuned on deepfake dataset) with real Grad-CAM and forensic heuristic stabilization.",
+                reasoning=reasoning,
+                fp_suppression_applied=False,
+                component_scores={
+                    "model_score": round(model_score, 1),
+                    "model_fake_prob": round(fake_prob * 100, 1),
+                    "model_real_prob": round((1 - fake_prob) * 100, 1),
+                    "ela": round(float(ela_score), 1),
+                    "dct": round(float(dct_score), 1),
+                    "forensics": round(float(forensics_score), 1),
+                    "heuristic_max": round(heuristic_max, 1),
+                },
+            )
+
+        except Exception as exc:
+            logger.error(f"EfficientNet inference failed: {exc}", exc_info=True)
+            # Fall back to heuristic mode
+            fallback = self._demo_inference(
+                img, ela_score, dct_score, forensics_score, forensics_result
+            )
+            fallback["model_note"] = (
+                f"EfficientNet model inference failed: {str(exc)}. "
+                "Fell back to heuristic forensic aggregation."
+            )
+            fallback["reasoning"].insert(
+                0, f"Model inference error handled safely: {str(exc)}"
+            )
+            return fallback
 
     def _demo_inference(
         self,
@@ -233,28 +411,23 @@ class ClassifierAnalyzer:
             symmetry_suspicious = forensics_result.get("symmetry", {}).get("is_suspicious", False)
 
         # ── Score Aggregation — ELA/DCT Primary ───────────────────────────
-        # ELA and DCT directly measure pixel-level and frequency artifacts.
-        # These are present in ALL AI-generated images (illustrated, photorealistic,
-        # face-swaps). Forensics biometrics only catch face-swaps.
         scores = [ela_score, dct_score, forensics_score]
         max_score = max(scores)
         ela_dct_max = max(ela_score, dct_score)
 
-        # Weighted average: ELA/DCT dominate because they detect ALL types
+        # Weighted average: ELA/DCT dominate
         weighted_avg = (
             ela_score * 0.35
             + dct_score * 0.35
             + forensics_score * 0.30
         )
 
-        # Boundary-specific boost: strongest face-swap indicator
+        # Boundary-specific boost
         if boundary_suspicious:
             boundary_score = forensics_result.get("boundaries", {}).get("score", 0)
             weighted_avg = max(weighted_avg, boundary_score * 0.85)
 
-        # Combined score: blend max with weighted avg
-        # Give more weight to the max signal — a single strong detection
-        # should not be averaged away by clean layers
+        # Combined score
         combined_score = max_score * 0.55 + weighted_avg * 0.45
 
         # ── Multi-signal agreement boost ──────────────────────────────────
@@ -266,7 +439,6 @@ class ClassifierAnalyzer:
         elif flagged_count >= 2:
             combined_score = min(100, combined_score + 10)
 
-        # ELA+DCT agreement is especially strong (pixel + frequency = clear signal)
         if ela_dct_flagged >= 2 and ela_dct_max >= 40:
             combined_score = min(100, combined_score + 8)
 
@@ -277,7 +449,6 @@ class ClassifierAnalyzer:
             combined_score = min(100, combined_score + 5)
 
         # ── Strong single-signal override ─────────────────────────────────
-        # A very strong ELA or DCT signal alone is meaningful
         if ela_dct_max >= 65:
             combined_score = max(combined_score, ela_dct_max * 0.90)
         elif ela_dct_max >= 50:
@@ -288,11 +459,6 @@ class ClassifierAnalyzer:
         combined_score = min(100, max(0, round(combined_score, 1)))
 
         # ── Prediction ────────────────────────────────────────────────────
-        # Thresholds:
-        #   0-29  = REAL     (all layers clean)
-        #   30-49 = SUSPICIOUS (some signals but not conclusive)
-        #   50+   = FAKE    (strong signal from at least one layer)
-
         if combined_score >= 60 and flagged_count >= 2:
             prediction = "FAKE"
             confidence = min(99, combined_score + 15)
@@ -358,32 +524,20 @@ class ClassifierAnalyzer:
             else:
                 reasoning.append("Combined analysis suggests potential AI generation")
 
-        return {
-            "prediction": prediction,
-            "confidence": confidence,
-            "combined_score": combined_score,
-            "gradcam_b64": gradcam_b64,
-            "model_loaded": False,
-            "model_note": "Running in demo mode — using multi-layer forensic aggregation. For higher accuracy, add a trained model to backend/models/",
-            "reasoning": reasoning,
-            "fp_suppression_applied": False,
-            "component_scores": {
+        return self._build_safe_response(
+            prediction=prediction,
+            confidence=confidence,
+            combined_score=combined_score,
+            gradcam_b64=gradcam_b64,
+            model_loaded=False,
+            model_note="Running in heuristic fallback mode — CLIP model not available. Using multi-layer forensic aggregation.",
+            reasoning=reasoning,
+            fp_suppression_applied=False,
+            component_scores={
                 "ela": round(ela_score, 1),
                 "ela_effective": round(ela_score, 1),
                 "dct": round(dct_score, 1),
                 "dct_effective": round(dct_score, 1),
                 "forensics": round(forensics_score, 1),
             },
-        }
-
-    def _real_inference(self, img: np.ndarray, img_bytes: bytes) -> Dict[str, Any]:
-        """Real model inference path (used when a model is loaded)."""
-        # Placeholder for actual model inference
-        # This would be implemented based on the specific model architecture
-        return {
-            "prediction": "UNKNOWN",
-            "confidence": 0,
-            "gradcam_b64": "",
-            "model_loaded": True,
-            "reasoning": ["Model inference not yet implemented for this architecture"],
-        }
+        )

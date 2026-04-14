@@ -321,14 +321,14 @@ class ELAAnalyzer:
         # Do NOT suppress if noise_cv is very low (< 0.08) — that's an AI synthesis signal
         is_likely_recompressed = (
             noise_cv >= 0.10  # Not suspiciously uniform (not AI-smooth)
-            and noise_cv < 0.35  # Consistent noise (not wildly inconsistent)
-            and rel_diff_val < 0.2  # No face-bg differential
+            and noise_cv < 0.40  # Consistent noise (not wildly inconsistent)
+            and rel_diff_val < 0.25  # No face-bg differential
             and raw_mean < 8.0  # Low-moderate raw error
             and score < 55  # Only suppress moderate scores, not high ones
         )
 
         if is_likely_recompressed:
-            score = max(0, round(score * 0.70))  # Suppress by 30% (was 40%)
+            score = max(0, round(score * 0.50))  # Suppress by 50% — model is primary now
             compression_fp_suppressed = True
 
         # ── Region scores ─────────────────────────────────────────────────

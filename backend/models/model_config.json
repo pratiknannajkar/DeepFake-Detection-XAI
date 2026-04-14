@@ -1,0 +1,11 @@
+{
+  "architecture": "efficientnet_b0",
+  "num_classes": 2,
+  "image_size": 224,
+  "class_to_idx": {
+    "Fake": 0,
+    "Real": 1
+  },
+  "test_accuracy": 76.64,
+  "model_file": "efficientnet_deepfake.pth"
+}

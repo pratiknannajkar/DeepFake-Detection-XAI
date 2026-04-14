@@ -1,110 +1,117 @@
-# 🛡️ DeepShield AI — Deepfake Detection Platform
+# Social Guard AI: Deepfake Detection System
 
-Multi-layered deepfake detection web application that combines forensic analysis, frequency-domain fingerprinting, and deep learning with visual explainability.
+> Multi-layered deepfake detection platform with Explainable AI (XAI), combining EfficientNet-B0 deep learning with forensic heuristics.
 
-## 🔬 Detection Methods
+## Team Members
+| Name | Roll No |
+|------|---------|
+| Abdul Taufique | BTAI-01 |
+| Pratik Nannajkar | BTAI-30 |
+| Hrishshikesh Nikam | BTAI-31 |
+| Altamash Tirandaz | BTAI-58 |
 
-| Method | Type | What It Detects |
-|--------|------|-----------------|
-| **ELA** (Error Level Analysis) | Pixel Forensics | Compression inconsistencies from image manipulation |
-| **DCT** (Discrete Cosine Transform) | Spectral Forensics | GAN/Diffusion upsampling artifacts in frequency domain |
-| **Face Forensics** | Biometric Analysis | Eye reflections, facial symmetry, boundary artifacts, teeth rendering |
-| **Grad-CAM** | AI / XAI | Visual explanation of which regions triggered the detection |
+**Department of Artificial Intelligence | Dr. D. Y. Patil Vidyapeeth, Pune**
 
-## 🚀 Quick Start
+---
 
-### Prerequisites
-- Python 3.9+
-- pip
+## Overview
+
+Social Guard AI is a deepfake detection platform that uses **4 independent analysis layers** to determine if an image is real or AI-generated/manipulated:
+
+1. **ELA (Error Level Analysis)** — Detects compression inconsistencies in JPEG images
+2. **DCT (Frequency Analysis)** — Identifies GAN fingerprints in the frequency domain
+3. **Face Forensics** — Checks biometric properties (eye reflections, symmetry, boundaries)
+4. **EfficientNet-B0 (Deep Learning)** — Custom-trained CNN on 190K+ images
+
+Results are combined using **80/20 weighted fusion** (80% model + 20% heuristics) and explained using **Grad-CAM heatmaps**.
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Backend | Python 3.10 + FastAPI + Uvicorn |
+| Deep Learning | PyTorch + torchvision |
+| Model | EfficientNet-B0 (4M params, 15.6MB) |
+| Image Processing | OpenCV + Pillow |
+| Face Detection | MediaPipe (468 landmarks) |
+| Frontend | HTML5 + CSS3 + JavaScript |
+| Explainability | Grad-CAM (real gradients) |
+
+## Project Structure
+
+```
+├── backend/
+│   ├── main.py                    # FastAPI entry point
+│   ├── analyzers/
+│   │   ├── ela.py                 # Error Level Analysis
+│   │   ├── dct.py                 # DCT Frequency Analysis
+│   │   ├── face_forensics.py      # Biometric Forensics
+│   │   ├── classifier.py          # Score Fusion (80/20)
+│   │   ├── model_loader.py        # EfficientNet + Grad-CAM
+│   │   └── xai_report.py          # XAI Report Generator
+│   ├── models/
+│   │   └── efficientnet_deepfake.pth  # Trained model (not in repo)
+│   └── utils/
+│       ├── image_utils.py
+│       └── face_extractor.py
+├── frontend/
+│   ├── index.html                 # Web interface
+│   ├── css/style.css
+│   └── js/
+├── train_model.py                 # Training script
+├── generate_ppt.py                # PPT generator
+├── DeepShield_Training_Report.ipynb  # Training report
+└── DeepShield_AI_Presentation.pptx   # Project presentation
+```
+
+## How to Run
 
 ### 1. Install Dependencies
 ```bash
-cd backend
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 ```
 
-### 2. Start the Backend
+### 2. Train the Model (first time only)
 ```bash
-# From the project root (DeepFake/)
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+# Quick training (5K images, ~30 min on CPU)
+python train_model.py --max-samples 5000
+
+# Full training (140K images, needs GPU)
+python train_model.py
 ```
 
-### 3. Open the Frontend
-Navigate to `http://localhost:8000` in your browser.
-
-The frontend is served automatically by FastAPI as static files.
-
-## 📡 API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/analyze` | Full analysis pipeline (all methods) |
-| `POST` | `/api/analyze/ela` | Error Level Analysis only |
-| `POST` | `/api/analyze/dct` | DCT Frequency Analysis only |
-| `POST` | `/api/analyze/forensics` | Face Forensics only |
-| `GET` | `/api/health` | Health check |
-
-### Example cURL
+### 3. Start the Server
 ```bash
-curl -X POST "http://localhost:8000/api/analyze" \
-  -F "file=@path/to/image.jpg"
+uvicorn backend.main:app --reload
 ```
 
-## 🏗️ Architecture
-
+### 4. Open Browser
 ```
-DeepFake/
-├── backend/
-│   ├── main.py              # FastAPI app & endpoints
-│   ├── requirements.txt     # Python dependencies
-│   ├── analyzers/
-│   │   ├── ela.py           # Error Level Analysis
-│   │   ├── dct.py           # DCT Frequency Analysis
-│   │   ├── face_forensics.py # Biometric heuristic checks
-│   │   └── classifier.py   # CNN + Grad-CAM (demo/real mode)
-│   ├── utils/
-│   │   ├── face_extractor.py # Face detection (OpenCV + MediaPipe)
-│   │   └── image_utils.py   # Image processing utilities
-│   └── models/              # Pre-trained model weights
-├── frontend/
-│   ├── index.html           # Main SPA
-│   ├── css/style.css        # Premium dark theme
-│   └── js/
-│       ├── app.js           # Main controller
-│       ├── upload.js        # Upload handling
-│       ├── results.js       # Results rendering
-│       └── animations.js   # Background particles & animations
-└── README.md
+http://localhost:8000
 ```
 
-## 🎨 Features
+Upload any image and the system will analyze it across all 4 detection layers.
 
-- **Premium Dark UI** — Glassmorphism, neon accents, animated particles
-- **Drag & Drop Upload** — With file validation and preview
-- **Real-time Analysis** — Processes images through 4 detection layers
-- **Interactive Heatmaps** — ELA, DCT spectral, and Grad-CAM overlays
-- **Face Forensics** — Checks symmetry, eye reflections, boundaries, mouth
-- **Animated Results** — Score ring animation, counter animations, tabbed dashboard
-- **Responsive Design** — Works on desktop and mobile
+## Model Performance
 
-## 🔧 Adding a Real Model
+| Metric | Value |
+|--------|-------|
+| Best Validation Accuracy | 83.04% |
+| Test Accuracy | 76.64% |
+| Fake F1-Score | 0.7700 |
+| Real F1-Score | 0.7628 |
+| Dataset Size | 190,335 images |
+| Training Strategy | Two-phase transfer learning |
 
-To use a trained deepfake detection model instead of demo mode:
+## Key Features
 
-1. Place your model file in `backend/models/`:
-   - TensorFlow/Keras: `deepfake_detector.h5`
-   - PyTorch: `deepfake_detector.pth`
+- **Multi-layered detection** — 4 independent methods, no single point of failure
+- **80/20 Score Fusion** — Trained model leads, heuristics provide safety net
+- **Grad-CAM Explainability** — Visual heatmaps showing WHY an image is flagged
+- **AI Explanation Panel** — Human-readable per-layer breakdown of the decision
+- **Premium UI** — Dark-themed web interface with animations
+- **Fast Inference** — < 5 seconds on CPU
 
-2. The classifier will automatically detect and load the model.
+## License
 
-Recommended architectures: XceptionNet or EfficientNet fine-tuned on FaceForensics++.
-
-## 📚 Tech Stack
-
-- **Backend**: FastAPI, OpenCV, MediaPipe, SciPy, NumPy, Pillow
-- **Frontend**: Vanilla HTML/CSS/JS, Canvas API
-- **Detection**: ELA, DCT, Face Mesh Landmarks, Grad-CAM
-
-## 📄 License
-
-Built for educational and research purposes. Use responsibly.
+This project is for academic purposes.

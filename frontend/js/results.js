@@ -21,6 +21,7 @@ const Results = (() => {
         }, 100);
 
         renderVerdict(data.overall);
+        renderExplanation(data.overall, data.ela, data.dct, data.forensics, data.classifier);
         renderGradCAM(data.overall, data.classifier);
         renderELA(data.ela);
         renderDCT(data.dct);
@@ -79,6 +80,129 @@ const Results = (() => {
         reasoningEl.innerHTML = reasoning.map(r =>
             `<div class="reasoning-item">⚡ ${escapeHtml(r)}</div>`
         ).join('');
+    }
+
+    // ── AI Explanation Panel ─────────────────────────────────────────────
+    function renderExplanation(overall, ela, dct, forensics, classifier) {
+        const panel = document.getElementById('explanation-panel');
+        panel.style.display = 'block';
+
+        const verdict = overall.verdict || 'UNKNOWN';
+        const score = overall.score || 0;
+        const elaScore = ela?.score || 0;
+        const dctScore = dct?.score || 0;
+        const forensicsScore = forensics?.score || 0;
+        const modelLoaded = classifier?.model_loaded !== false;
+
+        // Title
+        const verdictText = document.getElementById('expl-verdict-text');
+        const verdictClass = (verdict === 'FAKE') ? 'expl-fake'
+            : (verdict === 'SUSPICIOUS') ? 'expl-suspicious' : 'expl-real';
+        verdictText.textContent = verdict;
+        verdictText.className = verdictClass;
+
+        // Summary
+        const summaryEl = document.getElementById('expl-summary');
+        const flaggedCount = [elaScore >= 50, dctScore >= 50, forensicsScore >= 50].filter(Boolean).length;
+
+        if (verdict === 'FAKE') {
+            summaryEl.innerHTML = `<strong>${flaggedCount} out of 3</strong> forensic analysis layers detected anomalies in this image. ` +
+                `The combined evidence from pixel-level analysis, frequency domain inspection, and ${
+                    modelLoaded ? 'the trained EfficientNet-B0 deep learning model' : 'biometric forensics'
+                } indicates this image has been <strong>manipulated or AI-generated</strong>.`;
+        } else if (verdict === 'SUSPICIOUS') {
+            summaryEl.innerHTML = `Some analysis layers detected <strong>minor anomalies</strong>, but the evidence is not conclusive. ` +
+                `This could indicate subtle manipulation, heavy JPEG compression, or image processing artifacts. ` +
+                `<strong>Further manual inspection recommended.</strong>`;
+        } else {
+            summaryEl.innerHTML = `All forensic analysis layers show <strong>consistent, natural patterns</strong>. ` +
+                `No significant compression anomalies, frequency artifacts, or biometric issues were detected. ` +
+                `This image appears to be an <strong>authentic, unmanipulated photograph</strong>.`;
+        }
+
+        // Build 4 explanation cards
+        const grid = document.getElementById('explanation-grid');
+        const layers = [
+            {
+                name: 'ELA (Error Level Analysis)',
+                icon: '🔍',
+                score: elaScore,
+                getDetail: (s) => {
+                    if (s >= 65) return '<strong>High compression inconsistencies detected.</strong> Different regions of the image show different JPEG compression levels — a strong indicator of image editing or face-swapping. Manipulated areas absorb compression differently than original content.';
+                    if (s >= 40) return '<strong>Moderate compression variations found.</strong> Some regions show slightly different error levels, which could indicate minor editing, heavy re-compression, or image processing. Not conclusive on its own.';
+                    return '<strong>Compression levels are uniform across the image.</strong> The error levels are consistent, which is typical of an original, unedited photograph taken directly from a camera.';
+                }
+            },
+            {
+                name: 'DCT (Frequency Analysis)',
+                icon: '📊',
+                score: dctScore,
+                getDetail: (s) => {
+                    if (s >= 65) return '<strong>Abnormal frequency patterns detected.</strong> The image shows frequency-domain artifacts typical of GAN-generated or AI-upscaled images. Natural photos have a smooth frequency falloff, but this image has irregular spectral peaks.';
+                    if (s >= 40) return '<strong>Minor frequency irregularities found.</strong> Some unusual patterns in the frequency domain, possibly from image processing, resizing, or screenshot capture. Could be benign.';
+                    return '<strong>Natural frequency distribution.</strong> The DCT spectrum shows a smooth, natural decline from low to high frequencies — consistent with a real photograph. No GAN fingerprints or upsampling artifacts detected.';
+                }
+            },
+            {
+                name: 'Face Forensics',
+                icon: '👁️',
+                score: forensicsScore,
+                getDetail: (s) => {
+                    if (!forensics?.face_detected) return 'No face was detected in this image. Biometric checks (eye reflections, symmetry, boundary analysis) require a visible face and were skipped.';
+                    if (s >= 65) return '<strong>Biometric anomalies detected.</strong> Issues found in facial features such as mismatched eye reflections, unnatural symmetry, blending artifacts at face boundaries, or inconsistent skin texture — common signs of deepfake generation.';
+                    if (s >= 40) return '<strong>Minor biometric irregularities.</strong> Some facial features show slight anomalies, but these could be caused by lighting conditions, camera angle, or image compression rather than manipulation.';
+                    return '<strong>Facial features appear natural and consistent.</strong> Eye reflections match, face symmetry is within normal range, no boundary blending artifacts detected. These biometric indicators suggest an authentic face.';
+                }
+            },
+            {
+                name: modelLoaded ? 'EfficientNet-B0 (Deep Learning)' : 'AI Classifier',
+                icon: '🧠',
+                score: score,
+                getDetail: (s) => {
+                    if (!modelLoaded) return 'The deep learning model is in demo mode. Results are based on aggregated heuristic scores from ELA, DCT, and Face Forensics layers. Train the EfficientNet-B0 model for higher accuracy.';
+                    if (s >= 65) return `<strong>The trained EfficientNet-B0 model classified this image as FAKE</strong> with high confidence. The model was trained on 190K+ real/fake images and learned subtle pixel patterns, texture artifacts, and compression signatures invisible to the human eye.`;
+                    if (s >= 40) return '<strong>The model shows moderate uncertainty.</strong> The image has some features of both real and fake images. The model assigns roughly equal probabilities to both classes, suggesting the image is borderline.';
+                    return '<strong>The model classified this image as REAL</strong> with high confidence. The learned features from 190K+ training images closely match patterns seen in authentic, unmanipulated photographs.';
+                }
+            }
+        ];
+
+        grid.innerHTML = layers.map(layer => {
+            const isFlagged = layer.score >= 50;
+            const scoreClass = layer.score >= 65 ? 'high' : layer.score >= 35 ? 'moderate' : 'low';
+            const barClass = layer.score >= 65 ? 'danger' : layer.score >= 35 ? 'warn' : 'safe';
+            const badgeClass = isFlagged ? 'flagged' : 'pass';
+            const badgeText = isFlagged ? 'FLAGGED' : 'PASS';
+            const cardClass = isFlagged ? 'flagged' : 'safe';
+
+            return `
+                <div class="expl-card ${cardClass}">
+                    <div class="expl-card-header">
+                        <div class="expl-card-name">
+                            <span class="expl-icon">${layer.icon}</span>
+                            ${layer.name}
+                        </div>
+                        <span class="expl-badge ${badgeClass}">${badgeText}</span>
+                    </div>
+                    <div class="expl-score-row">
+                        <span class="expl-score-value ${scoreClass}">${layer.score}</span>
+                        <div class="expl-score-bar">
+                            <div class="expl-score-fill ${barClass}" style="width: ${Math.min(100, layer.score)}%;"></div>
+                        </div>
+                    </div>
+                    <div class="expl-detail">${layer.getDetail(layer.score)}</div>
+                </div>
+            `;
+        }).join('');
+
+        // Footer
+        const footerEl = document.getElementById('expl-footer');
+        footerEl.innerHTML = `<strong>How the final decision is made:</strong> The overall score combines ` +
+            (modelLoaded
+                ? `<strong>80% EfficientNet-B0 model prediction</strong> + <strong>20% forensic heuristics</strong> (ELA + DCT + Face Forensics). `
+                : `all three forensic heuristic scores (ELA + DCT + Face Forensics). `) +
+            `Score above 50 = FAKE, 35-50 = SUSPICIOUS, below 35 = REAL. ` +
+            `This multi-layered approach ensures no single detection method is a point of failure.`;
     }
 
     // ── Grad-CAM Panel ───────────────────────────────────────────────────
