@@ -2,13 +2,7 @@
 
 > Multi-layered deepfake detection platform with Explainable AI (XAI), combining EfficientNet-B0 deep learning with forensic heuristics.
 
-## Team Members
-| Name | Roll No |
-|------|---------|
-| Abdul Taufique | BTAI-01 |
-| Pratik Nannajkar | BTAI-30 |
-| Hrishshikesh Nikam | BTAI-31 |
-| Altamash Tirandaz | BTAI-58 |
+
 
 **Department of Artificial Intelligence | Dr. D. Y. Patil Vidyapeeth, Pune**
 
